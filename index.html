@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="sk">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>FEAST II Trainer — Prototyp</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <h1>FEAST II Trainer — Prototyp</h1>
+  </header>
+
+  <main>
+    <section id="controls">
+      <label>Režim:
+        <select id="modeSelect">
+          <option value="radar">Radar Tracking</option>
+          <option value="heading">Heading Change</option>
+          <option value="memory">Multitasking (Memory)</option>
+        </select>
+      </label>
+
+      <label>Počet lietadiel:
+        <select id="aircraftCount"><option>3</option><option selected>5</option><option>8</option></select>
+      </label>
+
+      <button id="startBtn">Štart</button>
+      <button id="stopBtn" disabled>Stop</button>
+      <button id="taskBtn" disabled>Nová úloha</button>
+      <label><input type="checkbox" id="radioToggle" checked> Rádio ON</label>
+      <div id="taskDisplay">Úloha: —</div>
+      <div id="score">Skóre: 0</div>
+    </section>
+
+    <section id="radarWrap">
+      <canvas id="radar" width="900" height="600"></canvas>
+    </section>
+
+    <section id="answers">
+      <div id="options"></div>
+      <div id="memoryInput" style="margin-top:8px;"></div>
+    </section>
+
+    <footer>
+      <p>Open-source prototyp — uprav si ho podľa potreby. (MIT License)</p>
+    </footer>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
