@@ -1,51 +1,81 @@
 <!doctype html>
-<html lang="sk">
+<html lang="en">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>FEAST II Trainer — Prototyp</title>
-  <link rel="stylesheet" href="style.css">
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>FEAST II Trainer — Full</title>
+  <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <header>
-    <h1>FEAST II Trainer — Prototyp</h1>
-  </header>
-
-  <main>
-    <section id="controls">
-      <label>Režim:
-        <select id="modeSelect">
-          <option value="radar">Radar Tracking</option>
-          <option value="heading">Heading Change</option>
-          <option value="memory">Multitasking (Memory)</option>
-        </select>
-      </label>
-
-      <label>Počet lietadiel:
-        <select id="aircraftCount"><option>3</option><option selected>5</option><option>8</option></select>
-      </label>
-
-      <button id="startBtn">Štart</button>
+  <div id="topbar">
+    <div class="brand">FEAST II Trainer — Full</div>
+    <div class="controls">
+      Mode:
+      <select id="modeSelect">
+        <option value="training">Training</option>
+        <option value="exam">Exam style</option>
+      </select>
+      Aircraft:
+      <select id="aircraftCount"><option>3</option><option selected>5</option><option>8</option></select>
+      <button id="startBtn">Start</button>
       <button id="stopBtn" disabled>Stop</button>
-      <button id="taskBtn" disabled>Nová úloha</button>
-      <label><input type="checkbox" id="radioToggle" checked> Rádio ON</label>
-      <div id="taskDisplay">Úloha: —</div>
-      <div id="score">Skóre: 0</div>
-    </section>
+      <button id="taskBtn" disabled>New task</button>
+      <label class="radioToggle"><input type="checkbox" id="radioToggle" checked /> Radio EN</label>
+    </div>
+  </div>
 
-    <section id="radarWrap">
-      <canvas id="radar" width="900" height="600"></canvas>
-    </section>
+  <div id="container">
+    <canvas id="radar"></canvas>
 
-    <section id="answers">
-      <div id="options"></div>
-      <div id="memoryInput" style="margin-top:8px;"></div>
-    </section>
+    <aside id="sidebar">
+      <h3>Selected Aircraft</h3>
+      <div id="selectedInfo">None</div>
 
-    <footer>
-      <p>Open-source prototyp — uprav si ho podľa potreby. (MIT License)</p>
-    </footer>
-  </main>
+      <div id="controlsPanel" class="panel">
+        <div class="row">
+          <button id="leftBtn">◀️ Turn -5°</button>
+          <button id="rightBtn">Turn +5° ▶️</button>
+        </div>
+        <div class="row">
+          <button id="altUpBtn">Alt +100</button>
+          <button id="altDownBtn">Alt -100</button>
+        </div>
+        <div class="row">
+          <input id="setHeadingInput" placeholder="Heading (0-359)" type="number" min="0" max="359"/>
+          <button id="setHeadingBtn">Set</button>
+        </div>
+        <div class="row">
+          <input id="setAltInput" placeholder="Altitude (ft)" type="number" />
+          <button id="setAltBtn">Set</button>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h4>Instructions / Keys</h4>
+        <ul>
+          <li>Click / tap aircraft to select</li>
+          <li>Left / Right arrows: change heading ±5°</li>
+          <li>Up / Down arrows: Altitude ±100 ft</li>
+          <li>Space: repeat last radio instruction</li>
+        </ul>
+      </div>
+
+      <div class="panel">
+        <h4>Task</h4>
+        <div id="taskDisplay">—</div>
+        <div id="timer">Time left: <span id="timeLeft">0</span>s</div>
+      </div>
+
+      <div class="panel small">
+        <div>Score: <span id="score">0</span></div>
+        <div id="status"></div>
+      </div>
+
+      <footer class="footer">
+        <small>Open-source FEAST II trainer — Full package. (MIT)</small>
+      </footer>
+    </aside>
+  </div>
 
   <script src="app.js"></script>
 </body>

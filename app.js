@@ -1,288 +1,324 @@
-// FEAST II Trainer — rozšírený o niekoľko FEAST II štýlových úloh
+
+// FEAST II Trainer - Full package (uses Web Speech API for TTS with radio static effect)
+// No external audio files required; realistic-ish radio simulated with static before TTS.
+
 const canvas = document.getElementById('radar');
 const ctx = canvas.getContext('2d');
+let dpi = window.devicePixelRatio || 1;
+
+function resizeCanvas(){
+  const rect = canvas.getBoundingClientRect();
+  canvas.width = Math.floor(rect.width * dpi);
+  canvas.height = Math.floor(rect.height * dpi);
+  ctx.setTransform(dpi,0,0,dpi,0,0);
+}
+window.addEventListener('resize', resizeCanvas);
+window.addEventListener('load', resizeCanvas);
+
 const startBtn = document.getElementById('startBtn');
 const stopBtn = document.getElementById('stopBtn');
 const taskBtn = document.getElementById('taskBtn');
 const aircraftCountSelect = document.getElementById('aircraftCount');
-const taskDisplay = document.getElementById('taskDisplay');
-const optionsDiv = document.getElementById('options');
-const scoreDiv = document.getElementById('score');
-const radioToggle = document.getElementById('radioToggle');
 const modeSelect = document.getElementById('modeSelect');
-const memoryInputDiv = document.getElementById('memoryInput');
+const taskDisplay = document.getElementById('taskDisplay');
+const scoreSpan = document.getElementById('score');
+const radioToggle = document.getElementById('radioToggle');
+const timeLeftSpan = document.getElementById('timeLeft');
+const statusDiv = document.getElementById('status');
+const selectedInfo = document.getElementById('selectedInfo');
+
+const leftBtn = document.getElementById('leftBtn');
+const rightBtn = document.getElementById('rightBtn');
+const altUpBtn = document.getElementById('altUpBtn');
+const altDownBtn = document.getElementById('altDownBtn');
+const setHeadingInput = document.getElementById('setHeadingInput');
+const setHeadingBtn = document.getElementById('setHeadingBtn');
+const setAltInput = document.getElementById('setAltInput');
+const setAltBtn = document.getElementById('setAltBtn');
 
 let aircraft = [];
-let animationId = null;
-let width = canvas.width, height = canvas.height;
+let anim = null;
+let lastTime = performance.now();
+let selectedId = null;
 let score = 0;
+let lastRadioText = '';
 let currentTask = null;
-let memorySequence = [];
+let responseTimer = null;
+let responseTimeLeft = 0;
+let audioCtx = null;
 
-// --- AUDIO (WebAudio + SpeechSynthesis) ---
-const AudioCtx = window.AudioContext || window.webkitAudioContext;
-const audioCtx = new AudioCtx();
-function speak(text, lang='sk-SK') {
+// --- Radio: static + TTS ---
+function ensureAudioCtx(){ if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)(); }
+
+function playStatic(duration = 350, level = 0.08){
+  if (!radioToggle.checked) return Promise.resolve();
+  ensureAudioCtx();
+  const ctx = audioCtx;
+  const bufferSize = Math.floor(ctx.sampleRate * duration/1000);
+  const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+  const data = buffer.getChannelData(0);
+  for (let i=0;i<bufferSize;i++) data[i] = (Math.random()*2-1) * 0.6;
+  const src = ctx.createBufferSource();
+  src.buffer = buffer;
+  const band = ctx.createBiquadFilter();
+  band.type = 'bandpass';
+  band.frequency.value = 1500;
+  const gain = ctx.createGain();
+  gain.gain.value = level;
+  src.connect(band).connect(gain).connect(ctx.destination);
+  src.start();
+  return new Promise(res => { src.onended = res; });
+}
+
+function speakEnglish(text){
+  lastRadioText = text;
   if (!radioToggle.checked) return;
-  if ('speechSynthesis' in window) {
-    const utter = new SpeechSynthesisUtterance(text);
-    // choose voice matching language if available
-    utter.lang = lang;
-    utter.rate = 0.95;
-    utter.pitch = 1.0;
-    window.speechSynthesis.speak(utter);
-  }
+  // some browsers block speech until user interacts; ensure interaction
+  try {
+    playStatic(280, 0.07).then(()=>{
+      if ('speechSynthesis' in window){
+        const u = new SpeechSynthesisUtterance(text);
+        u.lang = 'en-US';
+        u.rate = 1.0;
+        u.pitch = 1.0;
+        window.speechSynthesis.cancel();
+        window.speechSynthesis.speak(u);
+      }
+    });
+  } catch(e){ console.warn('TTS error', e); }
 }
 
 // --- Aircraft model ---
-function createAircraft(id) {
+const CALLSIGNS = ['Speedbird','Delta','Lufthansa','KLM','Iberia','Alitalia','AirFrance','Alpha','Bravo','Tango','Victor','Echo','Sierra','Omega'];
+
+function randCallsign(){
+  if (Math.random() < 0.5) return CALLSIGNS[Math.floor(Math.random()*CALLSIGNS.length)] + ' ' + Math.floor(Math.random()*900+100);
+  return ['ALPHA','BRAVO','CHARLIE','DELTA','ECHO'][Math.floor(Math.random()*5)] + ' ' + Math.floor(Math.random()*90+10);
+}
+
+function createAircraft(id){
+  const w = canvas.getBoundingClientRect().width;
+  const h = canvas.getBoundingClientRect().height;
   return {
-    id: id,
-    callsign: 'AC' + (100 + id),
-    x: Math.random() * width,
-    y: Math.random() * height,
+    id,
+    callsign: randCallsign(),
+    x: Math.random() * w,
+    y: Math.random() * h,
     heading: Math.random() * 360,
-    speed: 40 + Math.random() * 140,
-    alt: 2000 + Math.floor(Math.random()*5000),
-    color: '#' + Math.floor(Math.random()*0xFFFFFF).toString(16).padStart(6,'0')
-  }
+    speed: 30 + Math.random()*140,
+    alt: 3000 + Math.floor(Math.random()*7000),
+    color: `hsl(${Math.floor(Math.random()*360)},70%,60%)`
+  };
 }
 
-// --- Drawing radar and optional highlights ---
-function drawRadar(highlightId=null, showMemory=null) {
-  ctx.clearRect(0,0,width,height);
-  // grid
-  ctx.strokeStyle = 'rgba(255,255,255,0.04)';
-  for (let r=50;r<Math.max(width,height);r+=50) {
-    ctx.beginPath();
-    ctx.arc(width/2, height/2, r, 0, Math.PI*2);
-    ctx.stroke();
+function drawGrid(){
+  const w = canvas.width / dpi;
+  const h = canvas.height / dpi;
+  ctx.save();
+  ctx.globalAlpha = 0.06;
+  ctx.strokeStyle = '#bff';
+  for (let r=60;r<Math.max(w,h); r+=60){
+    ctx.beginPath(); ctx.arc(w/2,h/2,r,0,Math.PI*2); ctx.stroke();
   }
-  // center marker
-  ctx.fillStyle = '#9fe0ff';
-  ctx.beginPath();
-  ctx.arc(width/2, height/2, 4,0,Math.PI*2);
-  ctx.fill();
+  ctx.restore();
+  ctx.save();
+  const g = ctx.createRadialGradient(w/2,h/2,0,w/2,h/2,Math.min(w,h)/2);
+  g.addColorStop(0,'rgba(143,240,255,0.06)'); g.addColorStop(1,'transparent');
+  ctx.fillStyle = g; ctx.fillRect(0,0,w,h); ctx.restore();
+}
 
-  aircraft.forEach(ac => {
-    ctx.save();
-    ctx.translate(ac.x, ac.y);
-    ctx.rotate((ac.heading-90)*Math.PI/180);
-    ctx.fillStyle = ac.color;
-    ctx.beginPath();
-    ctx.moveTo(0, -8);
-    ctx.lineTo(6, 6);
-    ctx.lineTo(-6,6);
-    ctx.closePath();
-    ctx.fill();
+function draw(){
+  const rect = canvas.getBoundingClientRect();
+  const w = rect.width, h = rect.height;
+  ctx.clearRect(0,0,w,h);
+  ctx.fillStyle = 'rgba(0,8,12,0.6)'; ctx.fillRect(0,0,w,h);
+  drawGrid();
+  aircraft.forEach(ac=>{
+    ctx.save(); ctx.translate(ac.x,ac.y); ctx.rotate((ac.heading-90)*Math.PI/180);
+    if (selectedId===ac.id){ ctx.shadowColor='rgba(0,200,255,0.9)'; ctx.shadowBlur=18; } else { ctx.shadowBlur=8; ctx.shadowColor='rgba(0,150,200,0.4)'; }
+    ctx.fillStyle = ac.color; ctx.beginPath(); ctx.moveTo(0,-10); ctx.lineTo(7,8); ctx.lineTo(-7,8); ctx.closePath(); ctx.fill();
     ctx.restore();
-    ctx.fillStyle = '#dff';
-    ctx.font = '12px monospace';
-    ctx.fillText(`${ac.callsign} ${Math.round(ac.alt)}ft`, ac.x+8, ac.y-8);
-
-    if (highlightId === ac.id) {
-      ctx.strokeStyle = 'rgba(255,255,0,0.9)';
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.arc(ac.x, ac.y, 18, 0, Math.PI*2);
-      ctx.stroke();
-    }
+    ctx.fillStyle = '#dff'; ctx.font='12px monospace'; ctx.fillText(`${ac.callsign} ${Math.round(ac.alt)}ft`, ac.x+10, ac.y-10);
   });
-
-  // show memory items near center if requested
-  if (showMemory && memorySequence.length>0) {
-    ctx.fillStyle = '#ffd';
-    ctx.font = '20px monospace';
-    ctx.fillText('Pamätaj si: ' + memorySequence.join(' '), 30, 40);
-  }
 }
 
-// --- Movement update ---
-let lastTime = performance.now();
-function update() {
-  const now = performance.now();
-  const dt = (now - lastTime)/1000;
-  lastTime = now;
-  aircraft.forEach(ac => {
+function update(dt){
+  const rect = canvas.getBoundingClientRect();
+  aircraft.forEach(ac=>{
     const rad = ac.heading * Math.PI/180;
     const vx = Math.cos(rad) * ac.speed * dt/10;
     const vy = Math.sin(rad) * ac.speed * dt/10;
-    ac.x += vx;
-    ac.y += vy;
-    if (ac.x < 0) ac.x += width;
-    if (ac.x > width) ac.x -= width;
-    if (ac.y < 0) ac.y += height;
-    if (ac.y > height) ac.y -= height;
+    ac.x += vx; ac.y += vy;
+    if (ac.x < 0) ac.x += rect.width; if (ac.x > rect.width) ac.x -= rect.width;
+    if (ac.y < 0) ac.y += rect.height; if (ac.y > rect.height) ac.y -= rect.height;
   });
 }
 
-// --- Loop ---
-function loop() {
-  update();
-  drawRadar(currentTask && currentTask.type==='radar' ? currentTask.targetId : null, currentTask && currentTask.type==='memory');
-  animationId = requestAnimationFrame(loop);
+function loop(){
+  const now = performance.now();
+  const dt = (now - lastTime)/1000; lastTime = now;
+  update(dt);
+  draw();
+  anim = requestAnimationFrame(loop);
 }
 
-// --- Tasks generation (FEAST II-like) ---
-function generateTask() {
-  if (aircraft.length === 0) return;
-  clearUI();
-  const mode = modeSelect.value;
-  if (mode === 'radar') {
-    // Radar Tracking: announce callsign to track, show highlight briefly, then ask heading/alt
-    const target = aircraft[Math.floor(Math.random()*aircraft.length)];
-    currentTask = {type:'radar', targetId: target.id, targetCall: target.callsign};
-    taskDisplay.textContent = `Úloha (Radar Tracking): Sleduj lietadlo ${target.callsign} po 6 sekúnd.`;
-    speak(`Sledujte lietadlo ${target.callsign}.`);
-    // highlight for 3 seconds, then remove and after 6s ask question
-    setTimeout(()=> {
-      taskDisplay.textContent = `Úloha (Radar Tracking): Sledujte teraz pozorne...`;
-    }, 1000);
-    setTimeout(()=> {
-      // after tracking period, ask heading question
-      const correctHeading = Math.round(target.heading);
-      const options = makeHeadingOptions(correctHeading);
-      taskDisplay.textContent = `Otázka: Aký heading má ${target.callsign}? Vyber správnu možnosť.`;
-      showOptions(options, opt => handleAnswer(opt===correctHeading));
-    }, 6000);
-  } else if (mode === 'heading') {
-    // Heading Change: instruct to change heading, update aircraft heading, then ask which heading now
-    const target = aircraft[Math.floor(Math.random()*aircraft.length)];
-    const newHeading = Math.round(Math.random()*359);
-    currentTask = {type:'heading', targetId: target.id, targetCall: target.callsign, newHeading};
-    // announce and apply
-    speak(`${target.callsign}, otočte smer na ${newHeading} stupňov.`);
-    taskDisplay.textContent = `Úloha (Heading Change): Inštrukcia pre ${target.callsign} — otočte na ${newHeading}°. Sledujte zmenu.`;
-    // smoothly change heading over 2s
-    const start = performance.now();
-    const from = target.heading;
-    const duration = 2000;
-    function animateHeading(ts){
-      const t = Math.min(1,(ts-start)/duration);
-      // shortest rotation
-      const delta = ((((newHeading - from + 540) % 360) - 180));
-      target.heading = (from + delta*t + 360) % 360;
-      if (t<1) requestAnimationFrame(animateHeading);
-      else {
-        // ask question
-        taskDisplay.textContent = `Otázka: Aký je nový heading lietadla ${target.callsign}?`;
-        const opts = makeHeadingOptions(Math.round(target.heading));
-        showOptions(opts, opt => handleAnswer(opt===Math.round(target.heading)));
-      }
-    }
-    requestAnimationFrame(animateHeading);
-  } else if (mode === 'memory') {
-    // Multitasking memory: show short sequence of digits to remember while simulation runs, then ask to enter sequence
-    memorySequence = [];
-    const len = 4; // number of items
-    for (let i=0;i<len;i++) memorySequence.push(Math.floor(Math.random()*9));
-    currentTask = {type:'memory'};
-    taskDisplay.textContent = 'Úloha (Pamäť): Zapamätaj si túto sekvenciu čísiel.';
-    // show memory on screen for 3s
-    drawRadar(null, true);
-    speak('Zapamätajte si sekvenciu.');
-    setTimeout(()=> {
-      // hide and start simulation for a few seconds then ask
-      taskDisplay.textContent = 'Pamätajte si ju, teraz beží simulácia...';
-      setTimeout(()=> {
-        taskDisplay.textContent = 'Napíš zapamätanú sekvenciu:';
-        showMemoryInput();
-      }, 3500);
-    }, 3000);
+// selection
+canvas.addEventListener('click', (ev)=>{
+  const r = canvas.getBoundingClientRect();
+  const x = ev.clientX - r.left; const y = ev.clientY - r.top;
+  let nearest=null, nd=9999;
+  for (const ac of aircraft){ const dx=ac.x-x, dy=ac.y-y, d=Math.hypot(dx,dy); if (d<22 && d<nd){ nearest=ac; nd=d; } }
+  if (nearest){ selectAircraft(nearest.id); speakEnglish(`${nearest.callsign}, report heading and altitude`); setStatus(`Selected ${nearest.callsign}`); }
+  else deselect();
+});
+
+function selectAircraft(id){ selectedId = id; renderSelectedInfo(); }
+function deselect(){ selectedId = null; renderSelectedInfo(); }
+
+function renderSelectedInfo(){
+  if (!selectedId){ selectedInfo.textContent='None'; return; }
+  const ac = aircraft.find(a=>a.id===selectedId);
+  if (!ac){ selectedInfo.textContent='None'; return; }
+  selectedInfo.innerText = `Callsign: ${ac.callsign}\nHeading: ${Math.round(ac.heading)}°\nSpeed: ${Math.round(ac.speed)} px\nAltitude: ${Math.round(ac.alt)} ft\nX:${Math.round(ac.x)} Y:${Math.round(ac.y)}`;
+  setHeadingInput.value = Math.round(ac.heading); setAltInput.value = Math.round(ac.alt);
+}
+
+// controls
+leftBtn.onclick = ()=> changeHeading(-5); rightBtn.onclick = ()=> changeHeading(5);
+altUpBtn.onclick = ()=> changeAlt(100); altDownBtn.onclick = ()=> changeAlt(-100);
+setHeadingBtn.onclick = ()=> { const v = parseInt(setHeadingInput.value); if (!isNaN(v)) setHeading(v%360); };
+setAltBtn.onclick = ()=> { const v = parseInt(setAltInput.value); if (!isNaN(v)) setAlt(v); };
+
+function changeHeading(delta){
+  if (!selectedId) return setStatus('Select an aircraft first');
+  const ac = aircraft.find(a=>a.id===selectedId); ac.heading = (ac.heading + delta + 360)%360; renderSelectedInfo();
+  speakEnglish(`${ac.callsign}, turn heading ${Math.round(ac.heading)} degrees`);
+  checkTaskFulfil(ac);
+}
+
+function setHeading(val){ if (!selectedId) return setStatus('Select an aircraft first'); const ac = aircraft.find(a=>a.id===selectedId); ac.heading = (val+360)%360; renderSelectedInfo(); speakEnglish(`${ac.callsign}, heading set to ${Math.round(ac.heading)} degrees`); checkTaskFulfil(ac); }
+
+function changeAlt(delta){ if (!selectedId) return setStatus('Select an aircraft first'); const ac = aircraft.find(a=>a.id===selectedId); ac.alt = Math.max(0, ac.alt+delta); renderSelectedInfo(); speakEnglish(`${ac.callsign}, altitude ${Math.round(ac.alt)} feet`); checkTaskFulfil(ac); }
+
+function setAlt(val){ if (!selectedId) return setStatus('Select an aircraft first'); const ac = aircraft.find(a=>a.id===selectedId); ac.alt = Math.max(0, val); renderSelectedInfo(); speakEnglish(`${ac.callsign}, altitude set to ${Math.round(ac.alt)} feet`); checkTaskFulfil(ac); }
+
+// keyboard
+window.addEventListener('keydown',(e)=>{
+  if (e.key==='ArrowLeft'){ e.preventDefault(); changeHeading(-5); }
+  if (e.key==='ArrowRight'){ e.preventDefault(); changeHeading(5); }
+  if (e.key==='ArrowUp'){ e.preventDefault(); changeAlt(100); }
+  if (e.key==='ArrowDown'){ e.preventDefault(); changeAlt(-100); }
+  if (e.code==='Space'){ e.preventDefault(); if (lastRadioText) speakEnglish(lastRadioText); }
+});
+
+// tasks and scoring
+function createTask(){
+  if (aircraft.length===0) return;
+  clearTask();
+  const t = Math.floor(Math.random()*4);
+  if (t===0){
+    // heading command
+    const ac = randomAircraft();
+    const newH = Math.floor(Math.random()*360);
+    currentTask = {type:'heading', callsign:ac.callsign, id:ac.id, value:newH};
+    taskDisplay.textContent = `Command: ${ac.callsign} turn heading ${newH}°`;
+    speakEnglish(`${ac.callsign}, turn heading ${newH} degrees`);
+  } else if (t===1){
+    const ac = randomAircraft();
+    const newAlt = (Math.floor(Math.random()*40)+25)*100;
+    currentTask = {type:'alt', callsign:ac.callsign, id:ac.id, value:newAlt};
+    taskDisplay.textContent = `Command: ${ac.callsign} climb to ${newAlt}ft`;
+    speakEnglish(`${ac.callsign}, climb to flight level ${Math.floor(newAlt/100)}`);
+  } else if (t===2){
+    // identify heading question
+    const ac = randomAircraft();
+    currentTask = {type:'identifyHeading', callsign:ac.callsign, id:ac.id, value:Math.round(ac.heading)};
+    taskDisplay.textContent = `Question: identify heading of ${ac.callsign}`;
+    speakEnglish(`Identify heading of ${ac.callsign}`);
+  } else {
+    // closest pair detection (informational)
+    currentTask = {type:'closest'};
+    taskDisplay.textContent = `Question: which two aircraft are closest?`;
+    speakEnglish('Which two aircraft are closest?');
   }
+  // start timer
+  startResponseTimer(10);
 }
 
-function makeHeadingOptions(correct) {
-  const opts = new Set([correct]);
-  while (opts.size < 4) {
-    const delta = (Math.floor(Math.random()*5)+1)*10;
-    const sign = Math.random()>0.5?1:-1;
-    opts.add((correct + sign*delta + 360)%360);
+function randomAircraft(){ return aircraft[Math.floor(Math.random()*aircraft.length)]; }
+
+function startResponseTimer(seconds){
+  if (responseTimer) clearInterval(responseTimer);
+  responseTimeLeft = seconds;
+  timeLeftSpan.textContent = responseTimeLeft;
+  responseTimer = setInterval(()=>{
+    responseTimeLeft -= 1;
+    timeLeftSpan.textContent = responseTimeLeft;
+    if (responseTimeLeft <= 0){ clearInterval(responseTimer); responseTimer = null; onResponseTimeout(); }
+  }, 1000);
+}
+
+function onResponseTimeout(){
+  setStatus('Time out');
+  if (currentTask && currentTask.type && currentTask.type !== 'closest'){
+    score -= 1; scoreSpan.textContent = score;
+    speakEnglish('Time expired');
   }
-  return shuffle(Array.from(opts));
-}
-
-// --- UI helpers ---
-function showOptions(options, onSelect) {
-  optionsDiv.innerHTML = '';
-  memoryInputDiv.innerHTML = '';
-  options.forEach(opt => {
-    const btn = document.createElement('button');
-    btn.textContent = opt + '°';
-    btn.onclick = ()=> onSelect(opt);
-    optionsDiv.appendChild(btn);
-  });
-}
-
-function showMemoryInput() {
-  optionsDiv.innerHTML = '';
-  memoryInputDiv.innerHTML = '';
-  const input = document.createElement('input');
-  input.placeholder = 'Zadaj sekvenciu (napr. 5 2 8 1)';
-  input.style.width = '240px';
-  const submit = document.createElement('button');
-  submit.textContent = 'Odoslať';
-  submit.onclick = ()=> {
-    const val = input.value.trim().replace(/\s+/g,' ').split(' ').map(x=>parseInt(x)).filter(x=>!isNaN(x));
-    const correct = JSON.stringify(val) === JSON.stringify(memorySequence);
-    handleAnswer(correct);
-    memoryInputDiv.innerHTML = '';
-  };
-  memoryInputDiv.appendChild(input);
-  memoryInputDiv.appendChild(submit);
-}
-
-function handleAnswer(isCorrect) {
-  if (isCorrect) { score += 1; scoreDiv.textContent = `Skóre: ${score}`; taskDisplay.textContent += ' ✅ Správne'; speak('Správne'); }
-  else { taskDisplay.textContent += ' ❌ Nesprávne'; speak('Nesprávne'); }
-}
-
-// --- Utilities ---
-function shuffle(a){ for (let i=a.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[a[i],a[j]]=[a[j],a[i]];} return a; }
-
-function clearUI() {
-  optionsDiv.innerHTML = '';
-  memoryInputDiv.innerHTML = '';
-}
-
-// --- Controls ---
-startBtn.onclick = ()=> {
-  if (audioCtx.state === 'suspended') audioCtx.resume();
-  const count = parseInt(aircraftCountSelect.value);
-  aircraft = [];
-  for (let i=0;i<count;i++) aircraft.push(createAircraft(i+1));
-  lastTime = performance.now();
-  loop();
-  startBtn.disabled = true;
-  stopBtn.disabled = false;
-  taskBtn.disabled = false;
-  score = 0; scoreDiv.textContent = `Skóre: ${score}`;
-};
-
-stopBtn.onclick = ()=> {
-  cancelAnimationFrame(animationId);
-  animationId = null;
-  startBtn.disabled = false;
-  stopBtn.disabled = true;
-  taskBtn.disabled = true;
   currentTask = null;
-  clearUI();
-  taskDisplay.textContent = 'Úloha: —';
-};
+  taskDisplay.textContent = '—';
+  timeLeftSpan.textContent = '0';
+}
 
-taskBtn.onclick = ()=> {
-  generateTask();
-};
-
-// periodic ATC hint to make it lively
-setInterval(()=>{
-  if (animationId && radioToggle.checked) {
-    // small generic hint
-    const samples = [
-      'Sledujte pozície lietadiel.',
-      'Verifikujte headingy a altitúdy.',
-      'Pripravte sa na ďalšiu úlohu.'
-    ];
-    speak(samples[Math.floor(Math.random()*samples.length)]);
+function checkTaskFulfil(ac){
+  if (!currentTask) return;
+  if (ac.id !== currentTask.id) return; // wrong aircraft
+  if (currentTask.type === 'heading'){
+    const diff = Math.abs(((ac.heading - currentTask.value + 180 + 360) % 360) - 180);
+    if (diff <= 5){
+      score += 1; scoreSpan.textContent = score; speakEnglish('Correct'); setStatus('Correct',2000); clearTask();
+    }
+  } else if (currentTask.type === 'alt'){
+    if (Math.abs(ac.alt - currentTask.value) <= 100){
+      score += 1; scoreSpan.textContent = score; speakEnglish('Correct'); setStatus('Correct',2000); clearTask();
+    }
+  } else if (currentTask.type === 'identifyHeading'){
+    const diff = Math.abs(((ac.heading - currentTask.value + 180 + 360) % 360) - 180);
+    // user must click aircraft to select then we consider it correct if difference small
+    if (diff <= 10){
+      score += 1; scoreSpan.textContent = score; speakEnglish('Correct'); setStatus('Correct',2000); clearTask();
+    } else {
+      score -= 1; scoreSpan.textContent = score; speakEnglish('Incorrect'); setStatus('Incorrect',2000); clearTask();
+    }
   }
-}, 9000);
+}
+
+function clearTask(){
+  currentTask = null;
+  taskDisplay.textContent = '—';
+  if (responseTimer){ clearInterval(responseTimer); responseTimer = null; timeLeftSpan.textContent = '0'; }
+}
+
+// util
+function setStatus(txt, t=2000){ statusDiv.textContent = txt; if (t>0) setTimeout(()=>{ if (statusDiv.textContent===txt) statusDiv.textContent=''; }, t); }
+
+// UI: start/stop/task
+startBtn.onclick = ()=>{
+  const count = parseInt(aircraftCountSelect.value);
+  aircraft = []; for (let i=0;i<count;i++) aircraft.push(createAircraft(i+1));
+  lastTime = performance.now();
+  if (!anim) loop();
+  startBtn.disabled = true; stopBtn.disabled = false; taskBtn.disabled = false;
+  score = 0; scoreSpan.textContent = score; setStatus('Simulation started');
+};
+stopBtn.onclick = ()=>{ if (anim) cancelAnimationFrame(anim); anim=null; startBtn.disabled=false; stopBtn.disabled=true; taskBtn.disabled=true; setStatus('Stopped',1500); clearTask(); };
+
+taskBtn.onclick = ()=>{ createTask(); };
+
+// periodic radio hints
+setInterval(()=>{ if (!anim || !radioToggle.checked) return; const hints = ['Monitoring traffic','Maintain separation','Prepare for next task']; speakEnglish(hints[Math.floor(Math.random()*hints.length)]); }, 20000);
+
+// keyboard repeat last radio (space) handled above by event listener
+window.addEventListener('keydown',(e)=>{ if (e.code==='Space'){ e.preventDefault(); if (lastRadioText) speakEnglish(lastRadioText); } });
+
+// initial size
+setTimeout(()=>{ resizeCanvas(); }, 200);
